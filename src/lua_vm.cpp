@@ -13,8 +13,15 @@ extern "C" {
 
 namespace backend {
 
-LuaVm::LuaVm(const std::string& script_path)
-    : script_path_(script_path), state_(nullptr) {
+LuaVm::LuaVm(const std::string& script_path,
+             MpscQueue<GenericTask>* to_io,
+             MpscQueue<GenericTask>* to_disk,
+             int worker_index)
+    : script_path_(script_path),
+      state_(nullptr),
+      to_io_(to_io),
+      to_disk_(to_disk),
+      worker_index_(worker_index) {
 }
 
 LuaVm::~LuaVm() {
@@ -70,6 +77,9 @@ void LuaVm::HandleEvent(const Event& event) {
       break;
     case ProtocolType::Udp:
       handler = "lua_on_udp_signal";
+      break;
+    case ProtocolType::Unknown:
+      handler = "lua_on_timer";
       break;
     default:
       return;
@@ -138,8 +148,14 @@ int LuaVm::Lua_SendTcp(lua_State* state) {
   logger->info("lua requested tcp send session_id={} size={}",
                static_cast<std::uint64_t>(session_id),
                static_cast<std::size_t>(length));
-  (void)payload;
-  (void)self;
+  if (self && self->to_io_) {
+    GenericTask task;
+    task.type = TaskType::Tcp;
+    task.protocol = ProtocolType::Tcp;
+    task.session_id = static_cast<std::uint64_t>(session_id);
+    task.payload.assign(payload, length);
+    self->to_io_->Push(std::move(task));
+  }
   return 0;
 }
 
@@ -159,8 +175,14 @@ int LuaVm::Lua_SendUdp(lua_State* state) {
   logger->info("lua requested udp send session_id={} size={}",
                static_cast<std::uint64_t>(session_id),
                static_cast<std::size_t>(length));
-  (void)payload;
-  (void)self;
+  if (self && self->to_io_) {
+    GenericTask task;
+    task.type = TaskType::Udp;
+    task.protocol = ProtocolType::Udp;
+    task.session_id = static_cast<std::uint64_t>(session_id);
+    task.payload.assign(payload, length);
+    self->to_io_->Push(std::move(task));
+  }
   return 0;
 }
 
@@ -179,7 +201,14 @@ int LuaVm::Lua_PostDiskTask(lua_State* state) {
   logger->info("lua requested disk task description={} size={}",
                std::string(description, length),
                static_cast<std::size_t>(length));
-  (void)self;
+  if (self && self->to_disk_) {
+    GenericTask task;
+    task.type = TaskType::Disk;
+    task.protocol = ProtocolType::Unknown;
+    task.session_id = 0;
+    task.payload.assign(description, length);
+    self->to_disk_->Push(std::move(task));
+  }
   return 0;
 }
 
@@ -198,9 +227,15 @@ int LuaVm::Lua_CallExternalService(lua_State* state) {
   logger->info("lua requested external service description={} size={}",
                std::string(description, length),
                static_cast<std::size_t>(length));
-  (void)self;
+  if (self && self->to_disk_) {
+    GenericTask task;
+    task.type = TaskType::Disk;
+    task.protocol = ProtocolType::Unknown;
+    task.session_id = 0;
+    task.payload.assign(description, length);
+    self->to_disk_->Push(std::move(task));
+  }
   return 0;
 }
 
 }  // namespace backend
-

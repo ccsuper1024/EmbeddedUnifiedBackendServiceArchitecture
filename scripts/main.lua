@@ -13,8 +13,8 @@ function lua_on_udp_signal(event)
 end
 
 function lua_on_timer(event)
+    -- 可以在这里做周期性任务，例如心跳或定时检查
 end
 
 function lua_on_disk_done(event)
 end
-

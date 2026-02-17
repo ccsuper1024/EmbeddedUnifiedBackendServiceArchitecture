@@ -1,6 +1,9 @@
 #pragma once
 
 #include <string>
+#include <cstdint>
+
+#include "event.h"
 
 namespace backend {
 
@@ -14,6 +17,9 @@ enum class TaskType {
 
 struct GenericTask {
   TaskType type;
+  ProtocolType protocol;
+  std::uint64_t session_id;
+  std::string payload;
 };
 
 struct LogTask {
@@ -21,4 +27,3 @@ struct LogTask {
 };
 
 }  // namespace backend
-

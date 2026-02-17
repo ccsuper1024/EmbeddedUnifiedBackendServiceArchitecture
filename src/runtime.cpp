@@ -110,7 +110,10 @@ Runtime::Runtime(const AppConfig& config)
         std::make_unique<MpscQueue<GenericTask>>(config_.queue_size_worker_to_io));
     worker_to_disk_.push_back(
         std::make_unique<MpscQueue<GenericTask>>(config_.queue_size_worker_to_disk));
-    auto vm = std::make_unique<LuaVm>(config_.lua_main_script);
+    auto vm = std::make_unique<LuaVm>(config_.lua_main_script,
+                                      worker_to_io_.back().get(),
+                                      worker_to_disk_.back().get(),
+                                      i);
     if (!vm->Init()) {
       throw std::runtime_error("failed to initialize lua vm");
     }
@@ -425,6 +428,10 @@ void Runtime::RunDiskThread(int index) {
     for (auto& queue : worker_to_disk_) {
       if (queue->Pop(inbound)) {
         has_task = true;
+        if (inbound.type == TaskType::Disk) {
+          logger->info("disk thread {} handling task payload={}", index,
+                       inbound.payload);
+        }
         break;
       }
     }
@@ -453,6 +460,17 @@ void Runtime::RunTimerThread(int index) {
   logger->info("timer thread {} started", index);
   while (running_.load()) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::uint64_t now = NowMs();
+    for (std::size_t i = 0; i < io_to_worker_.size(); ++i) {
+      Event event;
+      event.protocol = ProtocolType::Unknown;
+      event.session_id = 0;
+      event.context.timestamp_ms = now;
+      event.context.remote_ip.clear();
+      event.context.remote_port = 0;
+      event.payload.clear();
+      io_to_worker_[i]->Push(std::move(event));
+    }
   }
   logger->info("timer thread {} stopped", index);
 }

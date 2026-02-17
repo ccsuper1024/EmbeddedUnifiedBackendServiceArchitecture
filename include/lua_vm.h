@@ -1,6 +1,8 @@
 #pragma once
 
 #include "event.h"
+#include "mpsc_queue.h"
+#include "tasks.h"
 
 #include <string>
 
@@ -10,7 +12,10 @@ namespace backend {
 
 class LuaVm {
  public:
-  explicit LuaVm(const std::string& script_path);
+  LuaVm(const std::string& script_path,
+        MpscQueue<GenericTask>* to_io,
+        MpscQueue<GenericTask>* to_disk,
+        int worker_index);
   ~LuaVm();
 
   bool Init();
@@ -26,7 +31,9 @@ class LuaVm {
 
   std::string script_path_;
   lua_State* state_;
+  MpscQueue<GenericTask>* to_io_;
+  MpscQueue<GenericTask>* to_disk_;
+  int worker_index_;
 };
 
 }  // namespace backend
-
