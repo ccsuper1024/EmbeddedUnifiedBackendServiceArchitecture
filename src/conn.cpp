@@ -43,6 +43,15 @@ UdpSession* UdpSessionTable::FindOrCreate(const std::string& ip,
   return &result.first->second;
 }
 
+UdpSession* UdpSessionTable::FindById(std::uint64_t id) {
+  for (auto& kv : sessions_) {
+    if (kv.second.id == id) {
+      return &kv.second;
+    }
+  }
+  return nullptr;
+}
+
 RtpSession* RtpSessionTable::FindOrCreate(std::uint32_t ssrc,
                                           std::uint64_t now_ms) {
   auto it = sessions_.find(ssrc);

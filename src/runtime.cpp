@@ -321,6 +321,36 @@ void Runtime::RunTcpIoThread(int index) {
         }
       }
     }
+    GenericTask outbound;
+    bool has_task = false;
+    for (auto& queue : worker_to_io_) {
+      if (queue->Pop(outbound)) {
+        has_task = true;
+        break;
+      }
+    }
+    if (has_task) {
+      if (outbound.type == TaskType::Tcp) {
+        int fd = static_cast<int>(outbound.session_id);
+        Conn* target = conn_table.Find(fd);
+        if (target) {
+          const char* data = outbound.payload.data();
+          std::size_t remaining = outbound.payload.size();
+          while (remaining > 0) {
+            ssize_t sent = ::send(fd, data, remaining, 0);
+            if (sent > 0) {
+              data += sent;
+              remaining -= static_cast<std::size_t>(sent);
+            } else {
+              if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
   }
   ::close(epoll_fd);
   ::close(listen_fd);
@@ -393,6 +423,29 @@ void Runtime::RunUdpIoThread(int index) {
           break;
         } else {
           break;
+        }
+      }
+    }
+    GenericTask outbound;
+    bool has_task = false;
+    for (auto& queue : worker_to_io_) {
+      if (queue->Pop(outbound)) {
+        has_task = true;
+        break;
+      }
+    }
+    if (has_task) {
+      if (outbound.type == TaskType::Udp) {
+        UdpSession* s = session_table.FindById(outbound.session_id);
+        if (s) {
+          sockaddr_in addr;
+          addr.sin_family = AF_INET;
+          addr.sin_port = htons(s->remote_port);
+          ::inet_pton(AF_INET, s->remote_ip.c_str(), &addr.sin_addr);
+          const char* data = outbound.payload.data();
+          std::size_t len = outbound.payload.size();
+          ::sendto(udp_fd, data, len, 0,
+                   reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
         }
       }
     }

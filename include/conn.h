@@ -51,6 +51,7 @@ class UdpSessionTable {
                            std::uint16_t port,
                            ProtocolType protocol,
                            std::uint64_t now_ms);
+  UdpSession* FindById(std::uint64_t id);
 
  private:
   std::unordered_map<std::string, UdpSession> sessions_;
