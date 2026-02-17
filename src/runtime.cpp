@@ -31,32 +31,69 @@ std::uint64_t NowMs() {
   return static_cast<std::uint64_t>(ms.count());
 }
 
-bool IsRtpPacket(const char* data, std::size_t len, std::uint32_t& out_ssrc) {
+struct RtpHeader {
+  std::uint8_t version;
+  bool padding;
+  bool extension;
+  std::uint8_t csrc_count;
+  bool marker;
+  std::uint8_t payload_type;
+  std::uint16_t sequence_number;
+  std::uint32_t timestamp;
+  std::uint32_t ssrc;
+  std::size_t header_length;
+};
+
+bool ParseRtpHeader(const char* data, std::size_t len, RtpHeader& out) {
   if (len < 12) {
     return false;
   }
   unsigned char b0 = static_cast<unsigned char>(data[0]);
-  unsigned int version = b0 >> 6;
-  if (version != 2) {
+  out.version = static_cast<std::uint8_t>(b0 >> 6);
+  if (out.version != 2) {
     return false;
   }
-  unsigned char pt = static_cast<unsigned char>(data[1]) & 0x7F;
-  if (pt > 127) {
-    return false;
-  }
-  out_ssrc =
+  out.padding = ((b0 >> 5) & 0x1) != 0;
+  out.extension = ((b0 >> 4) & 0x1) != 0;
+  out.csrc_count = static_cast<std::uint8_t>(b0 & 0x0F);
+  unsigned char b1 = static_cast<unsigned char>(data[1]);
+  out.marker = ((b1 >> 7) & 0x1) != 0;
+  out.payload_type = static_cast<std::uint8_t>(b1 & 0x7F);
+  out.sequence_number =
+      static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(data[2])) << 8) |
+                                 static_cast<std::uint16_t>(static_cast<unsigned char>(data[3])));
+  out.timestamp =
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[4])) << 24) |
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[5])) << 16) |
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[6])) << 8) |
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[7])));
+  out.ssrc =
       (static_cast<std::uint32_t>(static_cast<unsigned char>(data[8])) << 24) |
       (static_cast<std::uint32_t>(static_cast<unsigned char>(data[9])) << 16) |
       (static_cast<std::uint32_t>(static_cast<unsigned char>(data[10])) << 8) |
       (static_cast<std::uint32_t>(static_cast<unsigned char>(data[11])));
+  std::size_t header_len = 12 + static_cast<std::size_t>(out.csrc_count) * 4;
+  if (len < header_len) {
+    return false;
+  }
+  if (out.extension) {
+    if (len < header_len + 4) {
+      return false;
+    }
+    std::uint16_t ext_len =
+        static_cast<std::uint16_t>((static_cast<std::uint16_t>(static_cast<unsigned char>(data[header_len + 2])) << 8) |
+                                   static_cast<std::uint16_t>(static_cast<unsigned char>(data[header_len + 3])));
+    header_len += 4 + static_cast<std::size_t>(ext_len) * 4;
+    if (len < header_len) {
+      return false;
+    }
+  }
+  out.header_length = header_len;
   return true;
 }
 
-void LoadStateFiles(LuaVm& vm) {
-  DIR* dir = ::opendir("state/v1");
-  if (!dir) {
-    dir = ::opendir("state");
-  }
+void LoadStateFilesFromDir(LuaVm& vm, const std::string& base, bool v2_encoded) {
+  DIR* dir = ::opendir(base.c_str());
   if (!dir) {
     return;
   }
@@ -66,7 +103,6 @@ void LoadStateFiles(LuaVm& vm) {
       continue;
     }
     std::string filename(entry->d_name);
-    std::string base = "state/v1";
     std::string path = base + "/" + filename;
     std::ifstream input(path, std::ios::binary);
     if (!input.is_open()) {
@@ -74,11 +110,37 @@ void LoadStateFiles(LuaVm& vm) {
     }
     std::string data((std::istreambuf_iterator<char>(input)),
                      std::istreambuf_iterator<char>());
+    std::string payload = data;
+    if (v2_encoded) {
+      if (data.size() < 9) {
+        continue;
+      }
+      if (!(data[0] == 'S' && data[1] == 'T' && data[2] == 'V' && data[3] == '2')) {
+        continue;
+      }
+      const unsigned char* p =
+          reinterpret_cast<const unsigned char*>(data.data() + 5);
+      std::uint32_t length =
+          static_cast<std::uint32_t>(p[0]) |
+          (static_cast<std::uint32_t>(p[1]) << 8) |
+          (static_cast<std::uint32_t>(p[2]) << 16) |
+          (static_cast<std::uint32_t>(p[3]) << 24);
+      std::size_t remain = data.size() - 9;
+      std::size_t use = remain < static_cast<std::size_t>(length) ? remain
+                                                                   : static_cast<std::size_t>(length);
+      payload.assign(data.data() + 9, use);
+    }
     std::size_t dot = filename.find('.');
     std::string name = dot == std::string::npos ? filename : filename.substr(0, dot);
-    vm.RestoreState(name, data);
+    vm.RestoreState(name, payload);
   }
   ::closedir(dir);
+}
+
+void LoadStateFiles(LuaVm& vm) {
+  LoadStateFilesFromDir(vm, "state/v2", true);
+  LoadStateFilesFromDir(vm, "state/v1", false);
+  LoadStateFilesFromDir(vm, "state", false);
 }
 
 int SetNonBlocking(int fd) {
@@ -462,11 +524,12 @@ void Runtime::RunUdpIoThread(int index) {
           std::string ip = IpFromSockaddr(addr);
           std::uint16_t port = ntohs(addr.sin_port);
           std::uint64_t now = NowMs();
-          std::uint32_t ssrc = 0;
-          bool is_rtp =
-              IsRtpPacket(buffer, static_cast<std::size_t>(received), ssrc);
+          RtpHeader header;
+          bool is_rtp = ParseRtpHeader(buffer,
+                                       static_cast<std::size_t>(received),
+                                       header);
           if (is_rtp) {
-            RtpSession* rtp_session = rtp_table.FindOrCreate(ssrc, now);
+            RtpSession* rtp_session = rtp_table.FindOrCreate(header.ssrc, now);
             Event event;
             event.protocol = ProtocolType::Rtp;
             event.session_id = rtp_session->id;
@@ -486,6 +549,19 @@ void Runtime::RunUdpIoThread(int index) {
                   "rtp/session_" + std::to_string(rtp_session->id) + ".bin";
               record.data.assign(buffer, static_cast<std::size_t>(received));
               worker_to_disk_[worker_index]->Push(std::move(record));
+              DiskTask index_task;
+              index_task.op = DiskOp::Append;
+              index_task.path =
+                  "rtp/session_" + std::to_string(rtp_session->id) + ".idx";
+              std::string line;
+              line.append(std::to_string(header.sequence_number));
+              line.push_back(' ');
+              line.append(std::to_string(header.timestamp));
+              line.push_back(' ');
+              line.append(std::to_string(header.ssrc));
+              line.push_back('\n');
+              index_task.data = std::move(line);
+              worker_to_disk_[worker_index]->Push(std::move(index_task));
             }
           } else {
             UdpSession* session =

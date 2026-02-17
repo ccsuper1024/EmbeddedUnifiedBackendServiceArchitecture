@@ -66,6 +66,10 @@ bool LuaVm::Init() {
   lua_pushcclosure(state_, Lua_PersistState, 1);
   lua_setglobal(state_, "cpp_persist_state");
 
+  lua_pushlightuserdata(state_, this);
+  lua_pushcclosure(state_, Lua_PersistStateV2, 1);
+  lua_setglobal(state_, "cpp_persist_state_v2");
+
   if (luaL_dofile(state_, script_path_.c_str()) != LUA_OK) {
     const char* message = lua_tostring(state_, -1);
     std::string error_message = message ? message : "";
@@ -295,6 +299,36 @@ int LuaVm::Lua_PersistState(lua_State* state) {
     task.op = DiskOp::Append;
     task.path = "state/" + std::string(name, name_len) + ".bin";
     task.data.assign(data, data_len);
+    self->to_disk_->Push(std::move(task));
+  }
+  return 0;
+}
+
+int LuaVm::Lua_PersistStateV2(lua_State* state) {
+  int argument_count = lua_gettop(state);
+  if (argument_count < 2) {
+    lua_pushstring(state, "cpp_persist_state_v2 expects name and data");
+    lua_error(state);
+    return 0;
+  }
+  std::size_t name_len = 0;
+  const char* name = luaL_checklstring(state, 1, &name_len);
+  std::size_t data_len = 0;
+  const char* data = luaL_checklstring(state, 2, &data_len);
+  void* userdata = lua_touserdata(state, lua_upvalueindex(1));
+  auto* self = static_cast<LuaVm*>(userdata);
+  if (self && self->to_disk_) {
+    DiskTask task;
+    task.op = DiskOp::Append;
+    task.path = "state/v2/" + std::string(name, name_len) + ".bin";
+    std::string payload;
+    payload.append("STV2", 4);
+    payload.push_back(static_cast<char>(1));
+    std::uint32_t length = static_cast<std::uint32_t>(data_len);
+    payload.append(reinterpret_cast<const char*>(&length),
+                   sizeof(length));
+    payload.append(data, data_len);
+    task.data = std::move(payload);
     self->to_disk_->Push(std::move(task));
   }
   return 0;

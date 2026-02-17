@@ -32,6 +32,7 @@ class LuaVm {
   static int Lua_CallExternalService(lua_State* state);
   static int Lua_Log(lua_State* state);
   static int Lua_PersistState(lua_State* state);
+  static int Lua_PersistStateV2(lua_State* state);
 
   std::string script_path_;
   lua_State* state_;
