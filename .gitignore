@@ -1,0 +1,35 @@
+# Build artifacts
+/build/
+/cmake-build-*/
+/CMakeFiles/
+/CMakeCache.txt
+/cmake_install.cmake
+/Makefile
+
+# Dependency build directories
+/_deps/
+/build/_deps/
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Generated files
+compile_commands.json
+*.log
+
+# IDE/editor configs
+.vscode/
+.idea/
+*.user
+
+# OS files
+.DS_Store
+Thumbs.db
