@@ -16,11 +16,13 @@ namespace backend {
 LuaVm::LuaVm(const std::string& script_path,
              MpscQueue<GenericTask>* to_io,
              MpscQueue<GenericTask>* to_disk,
+             MpscQueue<LogTask>* to_log,
              int worker_index)
     : script_path_(script_path),
       state_(nullptr),
       to_io_(to_io),
       to_disk_(to_disk),
+      to_log_(to_log),
       worker_index_(worker_index) {
 }
 
@@ -55,6 +57,10 @@ bool LuaVm::Init() {
   lua_pushlightuserdata(state_, this);
   lua_pushcclosure(state_, Lua_CallExternalService, 1);
   lua_setglobal(state_, "cpp_call_external_service");
+
+  lua_pushlightuserdata(state_, this);
+  lua_pushcclosure(state_, Lua_Log, 1);
+  lua_setglobal(state_, "cpp_log");
 
   if (luaL_dofile(state_, script_path_.c_str()) != LUA_OK) {
     const char* message = lua_tostring(state_, -1);
@@ -234,6 +240,34 @@ int LuaVm::Lua_CallExternalService(lua_State* state) {
     task.session_id = 0;
     task.payload.assign(description, length);
     self->to_disk_->Push(std::move(task));
+  }
+  return 0;
+}
+
+int LuaVm::Lua_Log(lua_State* state) {
+  int argument_count = lua_gettop(state);
+  if (argument_count < 2) {
+    lua_pushstring(state, "cpp_log expects level and message");
+    lua_error(state);
+    return 0;
+  }
+  const char* level = luaL_checkstring(state, 1);
+  std::size_t len = 0;
+  const char* message = luaL_checklstring(state, 2, &len);
+  void* userdata = lua_touserdata(state, lua_upvalueindex(1));
+  auto* self = static_cast<LuaVm*>(userdata);
+  if (self && self->to_log_) {
+    LogTask task;
+    std::string lvl(level);
+    if (lvl == "trace") task.level = LogTask::Level::Trace;
+    else if (lvl == "debug") task.level = LogTask::Level::Debug;
+    else if (lvl == "info") task.level = LogTask::Level::Info;
+    else if (lvl == "warn") task.level = LogTask::Level::Warn;
+    else if (lvl == "error") task.level = LogTask::Level::Error;
+    else if (lvl == "critical") task.level = LogTask::Level::Critical;
+    else task.level = LogTask::Level::Info;
+    task.message.assign(message, len);
+    self->to_log_->Push(std::move(task));
   }
   return 0;
 }

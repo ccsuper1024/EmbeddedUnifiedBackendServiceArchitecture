@@ -15,6 +15,7 @@ class LuaVm {
   LuaVm(const std::string& script_path,
         MpscQueue<GenericTask>* to_io,
         MpscQueue<GenericTask>* to_disk,
+        MpscQueue<LogTask>* to_log,
         int worker_index);
   ~LuaVm();
 
@@ -28,11 +29,13 @@ class LuaVm {
   static int Lua_SendUdp(lua_State* state);
   static int Lua_PostDiskTask(lua_State* state);
   static int Lua_CallExternalService(lua_State* state);
+  static int Lua_Log(lua_State* state);
 
   std::string script_path_;
   lua_State* state_;
   MpscQueue<GenericTask>* to_io_;
   MpscQueue<GenericTask>* to_disk_;
+  MpscQueue<LogTask>* to_log_;
   int worker_index_;
 };
 

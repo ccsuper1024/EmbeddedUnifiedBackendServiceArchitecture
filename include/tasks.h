@@ -23,7 +23,16 @@ struct GenericTask {
 };
 
 struct LogTask {
-  std::string payload;
+  enum class Level {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Critical
+  };
+  Level level;
+  std::string message;
 };
 
 }  // namespace backend

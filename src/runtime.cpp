@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdexcept>
+#include <sys/stat.h>
 
 namespace backend {
 
@@ -113,6 +114,7 @@ Runtime::Runtime(const AppConfig& config)
     auto vm = std::make_unique<LuaVm>(config_.lua_main_script,
                                       worker_to_io_.back().get(),
                                       worker_to_disk_.back().get(),
+                                      worker_to_log_.get(),
                                       i);
     if (!vm->Init()) {
       throw std::runtime_error("failed to initialize lua vm");
@@ -416,6 +418,12 @@ void Runtime::RunUdpIoThread(int index) {
           int worker_index =
               static_cast<int>(session->id % static_cast<std::uint64_t>(config_.worker_threads));
           io_to_worker_[worker_index]->Push(std::move(event));
+          GenericTask record;
+          record.type = TaskType::Disk;
+          record.protocol = ProtocolType::Unknown;
+          record.session_id = session->id;
+          record.payload.assign(buffer, static_cast<std::size_t>(received));
+          worker_to_disk_[worker_index]->Push(std::move(record));
         } else if (received < 0) {
           if (errno == EAGAIN || errno == EWOULDBLOCK) {
             break;
@@ -482,8 +490,21 @@ void Runtime::RunDiskThread(int index) {
       if (queue->Pop(inbound)) {
         has_task = true;
         if (inbound.type == TaskType::Disk) {
-          logger->info("disk thread {} handling task payload={}", index,
-                       inbound.payload);
+          // 简易录制：按 session_id 追加写入 recordings 目录
+          try {
+            std::string dir = "recordings";
+            ::mkdir(dir.c_str(), 0755);
+            std::string path = dir + "/session_" + std::to_string(inbound.session_id) + ".bin";
+            FILE* f = ::fopen(path.c_str(), "ab");
+            if (f) {
+              (void)::fwrite(inbound.payload.data(), 1, inbound.payload.size(), f);
+              ::fclose(f);
+            } else {
+              logger->warn("disk thread {} failed to open {}", index, path);
+            }
+          } catch (...) {
+            logger->error("disk thread {} unexpected error during recording", index);
+          }
         }
         break;
       }
@@ -503,6 +524,14 @@ void Runtime::RunLogThread(int index) {
     if (!worker_to_log_->Pop(inbound)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
+    }
+    switch (inbound.level) {
+      case LogTask::Level::Trace: logger->trace("{}", inbound.message); break;
+      case LogTask::Level::Debug: logger->debug("{}", inbound.message); break;
+      case LogTask::Level::Info: logger->info("{}", inbound.message); break;
+      case LogTask::Level::Warn: logger->warn("{}", inbound.message); break;
+      case LogTask::Level::Error: logger->error("{}", inbound.message); break;
+      case LogTask::Level::Critical: logger->critical("{}", inbound.message); break;
     }
   }
   logger->info("log thread {} stopped", index);
