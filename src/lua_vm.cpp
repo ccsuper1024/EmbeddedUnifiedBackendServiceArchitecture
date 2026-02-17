@@ -15,7 +15,7 @@ namespace backend {
 
 LuaVm::LuaVm(const std::string& script_path,
              MpscQueue<GenericTask>* to_io,
-             MpscQueue<GenericTask>* to_disk,
+             MpscQueue<DiskTask>* to_disk,
              MpscQueue<LogTask>* to_log,
              int worker_index)
     : script_path_(script_path),
@@ -61,6 +61,10 @@ bool LuaVm::Init() {
   lua_pushlightuserdata(state_, this);
   lua_pushcclosure(state_, Lua_Log, 1);
   lua_setglobal(state_, "cpp_log");
+
+  lua_pushlightuserdata(state_, this);
+  lua_pushcclosure(state_, Lua_PersistState, 1);
+  lua_setglobal(state_, "cpp_persist_state");
 
   if (luaL_dofile(state_, script_path_.c_str()) != LUA_OK) {
     const char* message = lua_tostring(state_, -1);
@@ -208,11 +212,10 @@ int LuaVm::Lua_PostDiskTask(lua_State* state) {
                std::string(description, length),
                static_cast<std::size_t>(length));
   if (self && self->to_disk_) {
-    GenericTask task;
-    task.type = TaskType::Disk;
-    task.protocol = ProtocolType::Unknown;
-    task.session_id = 0;
-    task.payload.assign(description, length);
+    DiskTask task;
+    task.op = DiskOp::Append;
+    task.path = "jobs.log";
+    task.data.assign(description, length);
     self->to_disk_->Push(std::move(task));
   }
   return 0;
@@ -234,11 +237,10 @@ int LuaVm::Lua_CallExternalService(lua_State* state) {
                std::string(description, length),
                static_cast<std::size_t>(length));
   if (self && self->to_disk_) {
-    GenericTask task;
-    task.type = TaskType::Disk;
-    task.protocol = ProtocolType::Unknown;
-    task.session_id = 0;
-    task.payload.assign(description, length);
+    DiskTask task;
+    task.op = DiskOp::Append;
+    task.path = "external_service.log";
+    task.data.assign(description, length);
     self->to_disk_->Push(std::move(task));
   }
   return 0;
@@ -270,6 +272,49 @@ int LuaVm::Lua_Log(lua_State* state) {
     self->to_log_->Push(std::move(task));
   }
   return 0;
+}
+
+int LuaVm::Lua_PersistState(lua_State* state) {
+  int argument_count = lua_gettop(state);
+  if (argument_count < 2) {
+    lua_pushstring(state, "cpp_persist_state expects name and data");
+    lua_error(state);
+    return 0;
+  }
+  std::size_t name_len = 0;
+  const char* name = luaL_checklstring(state, 1, &name_len);
+  std::size_t data_len = 0;
+  const char* data = luaL_checklstring(state, 2, &data_len);
+  void* userdata = lua_touserdata(state, lua_upvalueindex(1));
+  auto* self = static_cast<LuaVm*>(userdata);
+  if (self && self->to_disk_) {
+    DiskTask task;
+    task.op = DiskOp::Append;
+    task.path = "state/" + std::string(name, name_len) + ".bin";
+    task.data.assign(data, data_len);
+    self->to_disk_->Push(std::move(task));
+  }
+  return 0;
+}
+
+void LuaVm::RestoreState(const std::string& name, const std::string& data) {
+  if (!state_) {
+    return;
+  }
+  auto logger = GetLogger();
+  lua_getglobal(state_, "lua_on_state_load");
+  if (!lua_isfunction(state_, -1)) {
+    lua_pop(state_, 1);
+    return;
+  }
+  lua_pushlstring(state_, name.data(), name.size());
+  lua_pushlstring(state_, data.data(), data.size());
+  if (lua_pcall(state_, 2, 0, 0) != LUA_OK) {
+    const char* message = lua_tostring(state_, -1);
+    std::string error_message = message ? message : "";
+    logger->error("lua_on_state_load error: {}", error_message);
+    lua_pop(state_, 1);
+  }
 }
 
 }  // namespace backend

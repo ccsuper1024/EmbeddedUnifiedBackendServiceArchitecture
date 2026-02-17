@@ -42,7 +42,7 @@ class Runtime {
 
   std::vector<std::unique_ptr<MpscQueue<Event>>> io_to_worker_;
   std::vector<std::unique_ptr<MpscQueue<GenericTask>>> worker_to_io_;
-  std::vector<std::unique_ptr<MpscQueue<GenericTask>>> worker_to_disk_;
+  std::vector<std::unique_ptr<MpscQueue<DiskTask>>> worker_to_disk_;
   std::unique_ptr<MpscQueue<LogTask>> worker_to_log_;
 
   std::vector<std::thread> tcp_io_threads_;

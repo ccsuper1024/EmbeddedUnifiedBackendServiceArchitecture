@@ -15,6 +15,18 @@ enum class TaskType {
   Log
 };
 
+enum class DiskOp {
+  Read,
+  Write,
+  Append
+};
+
+struct DiskTask {
+  DiskOp op;
+  std::string path;
+  std::string data;
+};
+
 struct GenericTask {
   TaskType type;
   ProtocolType protocol;

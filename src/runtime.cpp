@@ -18,6 +18,8 @@
 #include <fcntl.h>
 #include <stdexcept>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <fstream>
 
 namespace backend {
 
@@ -27,6 +29,52 @@ std::uint64_t NowMs() {
   auto now = std::chrono::steady_clock::now();
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
   return static_cast<std::uint64_t>(ms.count());
+}
+
+bool IsRtpPacket(const char* data, std::size_t len, std::uint32_t& out_ssrc) {
+  if (len < 12) {
+    return false;
+  }
+  unsigned char b0 = static_cast<unsigned char>(data[0]);
+  unsigned int version = b0 >> 6;
+  if (version != 2) {
+    return false;
+  }
+  unsigned char pt = static_cast<unsigned char>(data[1]) & 0x7F;
+  if (pt > 127) {
+    return false;
+  }
+  out_ssrc =
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[8])) << 24) |
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[9])) << 16) |
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[10])) << 8) |
+      (static_cast<std::uint32_t>(static_cast<unsigned char>(data[11])));
+  return true;
+}
+
+void LoadStateFiles(LuaVm& vm) {
+  DIR* dir = ::opendir("state");
+  if (!dir) {
+    return;
+  }
+  dirent* entry = nullptr;
+  while ((entry = ::readdir(dir)) != nullptr) {
+    if (entry->d_name[0] == '.') {
+      continue;
+    }
+    std::string filename(entry->d_name);
+    std::string path = std::string("state/") + filename;
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open()) {
+      continue;
+    }
+    std::string data((std::istreambuf_iterator<char>(input)),
+                     std::istreambuf_iterator<char>());
+    std::size_t dot = filename.find('.');
+    std::string name = dot == std::string::npos ? filename : filename.substr(0, dot);
+    vm.RestoreState(name, data);
+  }
+  ::closedir(dir);
 }
 
 int SetNonBlocking(int fd) {
@@ -110,7 +158,7 @@ Runtime::Runtime(const AppConfig& config)
     worker_to_io_.push_back(
         std::make_unique<MpscQueue<GenericTask>>(config_.queue_size_worker_to_io));
     worker_to_disk_.push_back(
-        std::make_unique<MpscQueue<GenericTask>>(config_.queue_size_worker_to_disk));
+        std::make_unique<MpscQueue<DiskTask>>(config_.queue_size_worker_to_disk));
     auto vm = std::make_unique<LuaVm>(config_.lua_main_script,
                                       worker_to_io_.back().get(),
                                       worker_to_disk_.back().get(),
@@ -123,6 +171,9 @@ Runtime::Runtime(const AppConfig& config)
   }
   worker_to_log_ =
       std::make_unique<MpscQueue<LogTask>>(config_.queue_size_worker_to_log);
+  if (!lua_vms_.empty()) {
+    LoadStateFiles(*lua_vms_[0]);
+  }
 }
 
 Runtime::~Runtime() {
@@ -383,6 +434,7 @@ void Runtime::RunUdpIoThread(int index) {
     return;
   }
   UdpSessionTable session_table;
+  RtpSessionTable rtp_table;
   const int max_events = 64;
   std::vector<epoll_event> events(max_events);
   while (running_.load()) {
@@ -406,24 +458,55 @@ void Runtime::RunUdpIoThread(int index) {
           std::string ip = IpFromSockaddr(addr);
           std::uint16_t port = ntohs(addr.sin_port);
           std::uint64_t now = NowMs();
-          UdpSession* session =
-              session_table.FindOrCreate(ip, port, ProtocolType::Udp, now);
-          Event event;
-          event.protocol = ProtocolType::Udp;
-          event.session_id = session->id;
-          event.context.timestamp_ms = now;
-          event.context.remote_ip = ip;
-          event.context.remote_port = port;
-          event.payload.assign(buffer, static_cast<std::size_t>(received));
-          int worker_index =
-              static_cast<int>(session->id % static_cast<std::uint64_t>(config_.worker_threads));
-          io_to_worker_[worker_index]->Push(std::move(event));
-          GenericTask record;
-          record.type = TaskType::Disk;
-          record.protocol = ProtocolType::Unknown;
-          record.session_id = session->id;
-          record.payload.assign(buffer, static_cast<std::size_t>(received));
-          worker_to_disk_[worker_index]->Push(std::move(record));
+          std::uint32_t ssrc = 0;
+          bool is_rtp =
+              IsRtpPacket(buffer, static_cast<std::size_t>(received), ssrc);
+          if (is_rtp) {
+            RtpSession* rtp_session = rtp_table.FindOrCreate(ssrc, now);
+            Event event;
+            event.protocol = ProtocolType::Rtp;
+            event.session_id = rtp_session->id;
+            event.context.timestamp_ms = now;
+            event.context.remote_ip = ip;
+            event.context.remote_port = port;
+            event.payload.assign(buffer, static_cast<std::size_t>(received));
+            int worker_index =
+                static_cast<int>(rtp_session->id %
+                                 static_cast<std::uint64_t>(config_.worker_threads));
+            io_to_worker_[worker_index]->Push(std::move(event));
+            if (worker_index >= 0 &&
+                worker_index < static_cast<int>(worker_to_disk_.size())) {
+              DiskTask record;
+              record.op = DiskOp::Append;
+              record.path =
+                  "rtp/session_" + std::to_string(rtp_session->id) + ".bin";
+              record.data.assign(buffer, static_cast<std::size_t>(received));
+              worker_to_disk_[worker_index]->Push(std::move(record));
+            }
+          } else {
+            UdpSession* session =
+                session_table.FindOrCreate(ip, port, ProtocolType::Udp, now);
+            Event event;
+            event.protocol = ProtocolType::Udp;
+            event.session_id = session->id;
+            event.context.timestamp_ms = now;
+            event.context.remote_ip = ip;
+            event.context.remote_port = port;
+            event.payload.assign(buffer, static_cast<std::size_t>(received));
+            int worker_index =
+                static_cast<int>(session->id %
+                                 static_cast<std::uint64_t>(config_.worker_threads));
+            io_to_worker_[worker_index]->Push(std::move(event));
+            if (worker_index >= 0 &&
+                worker_index < static_cast<int>(worker_to_disk_.size())) {
+              DiskTask record;
+              record.op = DiskOp::Append;
+              record.path = "recordings/udp_session_" +
+                            std::to_string(session->id) + ".bin";
+              record.data.assign(buffer, static_cast<std::size_t>(received));
+              worker_to_disk_[worker_index]->Push(std::move(record));
+            }
+          }
         } else if (received < 0) {
           if (errno == EAGAIN || errno == EWOULDBLOCK) {
             break;
@@ -483,27 +566,33 @@ void Runtime::RunWorkerThread(int index) {
 void Runtime::RunDiskThread(int index) {
   auto logger = GetLogger();
   logger->info("disk thread {} started", index);
-  GenericTask inbound;
+  DiskTask inbound;
   while (running_.load()) {
     bool has_task = false;
     for (auto& queue : worker_to_disk_) {
       if (queue->Pop(inbound)) {
         has_task = true;
-        if (inbound.type == TaskType::Disk) {
-          // 简易录制：按 session_id 追加写入 recordings 目录
+        if (inbound.op == DiskOp::Read) {
+        } else if (inbound.op == DiskOp::Write || inbound.op == DiskOp::Append) {
           try {
-            std::string dir = "recordings";
-            ::mkdir(dir.c_str(), 0755);
-            std::string path = dir + "/session_" + std::to_string(inbound.session_id) + ".bin";
-            FILE* f = ::fopen(path.c_str(), "ab");
+            std::size_t slash = inbound.path.find_last_of('/');
+            if (slash != std::string::npos) {
+              std::string dir = inbound.path.substr(0, slash);
+              ::mkdir(dir.c_str(), 0755);
+            }
+            const char* mode =
+                inbound.op == DiskOp::Append ? "ab" : "wb";
+            FILE* f = ::fopen(inbound.path.c_str(), mode);
             if (f) {
-              (void)::fwrite(inbound.payload.data(), 1, inbound.payload.size(), f);
+              (void)::fwrite(inbound.data.data(), 1, inbound.data.size(), f);
               ::fclose(f);
             } else {
-              logger->warn("disk thread {} failed to open {}", index, path);
+              logger->warn("disk thread {} failed to open {}", index,
+                           inbound.path);
             }
           } catch (...) {
-            logger->error("disk thread {} unexpected error during recording", index);
+            logger->error("disk thread {} unexpected error during disk task",
+                          index);
           }
         }
         break;
