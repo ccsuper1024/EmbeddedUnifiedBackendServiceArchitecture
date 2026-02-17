@@ -88,6 +88,9 @@ void LuaVm::HandleEvent(const Event& event) {
     case ProtocolType::Udp:
       handler = "lua_on_udp_signal";
       break;
+    case ProtocolType::Rtp:
+      handler = "lua_on_rtp";
+      break;
     case ProtocolType::Unknown:
       handler = "lua_on_timer";
       break;

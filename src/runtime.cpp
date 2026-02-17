@@ -53,7 +53,10 @@ bool IsRtpPacket(const char* data, std::size_t len, std::uint32_t& out_ssrc) {
 }
 
 void LoadStateFiles(LuaVm& vm) {
-  DIR* dir = ::opendir("state");
+  DIR* dir = ::opendir("state/v1");
+  if (!dir) {
+    dir = ::opendir("state");
+  }
   if (!dir) {
     return;
   }
@@ -63,7 +66,8 @@ void LoadStateFiles(LuaVm& vm) {
       continue;
     }
     std::string filename(entry->d_name);
-    std::string path = std::string("state/") + filename;
+    std::string base = "state/v1";
+    std::string path = base + "/" + filename;
     std::ifstream input(path, std::ios::binary);
     if (!input.is_open()) {
       continue;

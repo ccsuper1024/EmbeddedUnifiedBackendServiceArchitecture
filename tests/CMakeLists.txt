@@ -42,3 +42,17 @@ add_test(
   NAME backend_lua_basic_tests
   COMMAND backend_lua_basic_tests
 )
+
+add_executable(backend_rtp_recording_tests
+  test_rtp_recording_tests.cpp
+)
+
+target_link_libraries(backend_rtp_recording_tests
+  PRIVATE
+    gtest_main
+)
+
+add_test(
+  NAME backend_rtp_recording_tests
+  COMMAND backend_rtp_recording_tests
+)
