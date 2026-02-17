@@ -122,6 +122,12 @@ AppConfig AppConfig::LoadFromFile(const std::string& path) {
   config.queue_size_worker_to_io = ToSize(values["queue_size_worker_to_io"], 65536);
   config.queue_size_worker_to_disk = ToSize(values["queue_size_worker_to_disk"], 16384);
   config.queue_size_worker_to_log = ToSize(values["queue_size_worker_to_log"], 16384);
+  auto lua_script_iter = values.find("lua_main_script");
+  if (lua_script_iter != values.end()) {
+    config.lua_main_script = lua_script_iter->second;
+  } else {
+    config.lua_main_script = "scripts/main.lua";
+  }
   return config;
 }
 

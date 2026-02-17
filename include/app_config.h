@@ -20,6 +20,7 @@ struct AppConfig {
   std::size_t queue_size_worker_to_io;
   std::size_t queue_size_worker_to_disk;
   std::size_t queue_size_worker_to_log;
+  std::string lua_main_script;
 
   static AppConfig LoadFromFile(const std::string& path);
 };

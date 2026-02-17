@@ -4,6 +4,7 @@
 #include "event.h"
 #include "mpsc_queue.h"
 #include "tasks.h"
+#include "lua_vm.h"
 
 #include <atomic>
 #include <memory>
@@ -50,6 +51,7 @@ class Runtime {
   std::vector<std::thread> disk_threads_;
   std::vector<std::thread> log_threads_;
   std::vector<std::thread> timer_threads_;
+  std::vector<std::unique_ptr<LuaVm>> lua_vms_;
 };
 
 }  // namespace backend

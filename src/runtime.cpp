@@ -2,6 +2,7 @@
 
 #include "conn.h"
 #include "logger.h"
+#include "lua_vm.h"
 
 #include <chrono>
 #include <memory>
@@ -15,6 +16,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdexcept>
 
 namespace backend {
 
@@ -108,6 +110,11 @@ Runtime::Runtime(const AppConfig& config)
         std::make_unique<MpscQueue<GenericTask>>(config_.queue_size_worker_to_io));
     worker_to_disk_.push_back(
         std::make_unique<MpscQueue<GenericTask>>(config_.queue_size_worker_to_disk));
+    auto vm = std::make_unique<LuaVm>(config_.lua_main_script);
+    if (!vm->Init()) {
+      throw std::runtime_error("failed to initialize lua vm");
+    }
+    lua_vms_.push_back(std::move(vm));
   }
   worker_to_log_ =
       std::make_unique<MpscQueue<LogTask>>(config_.queue_size_worker_to_log);
@@ -401,6 +408,9 @@ void Runtime::RunWorkerThread(int index) {
     if (!from_io->Pop(inbound)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
+    }
+    if (index >= 0 && index < static_cast<int>(lua_vms_.size())) {
+      lua_vms_[index]->HandleEvent(inbound);
     }
   }
   logger->info("worker thread {} stopped", index);

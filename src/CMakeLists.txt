@@ -4,6 +4,7 @@ add_library(backend_core
   runtime.cpp
   protocol.cpp
   conn.cpp
+  lua_vm.cpp
 )
 
 target_include_directories(backend_core
@@ -14,6 +15,7 @@ target_include_directories(backend_core
 target_link_libraries(backend_core
   PUBLIC
     spdlog::spdlog
+    lua
     pthread
 )
 

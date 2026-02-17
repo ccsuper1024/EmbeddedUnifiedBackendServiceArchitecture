@@ -27,3 +27,18 @@ add_test(
   NAME backend_mpsc_queue_tests
   COMMAND backend_mpsc_queue_tests
 )
+
+add_executable(backend_lua_basic_tests
+  test_lua_basic.cpp
+)
+
+target_link_libraries(backend_lua_basic_tests
+  PRIVATE
+    lua
+    gtest_main
+)
+
+add_test(
+  NAME backend_lua_basic_tests
+  COMMAND backend_lua_basic_tests
+)
