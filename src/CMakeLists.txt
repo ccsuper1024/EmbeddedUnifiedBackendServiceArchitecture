@@ -16,6 +16,7 @@ target_link_libraries(backend_core
   PUBLIC
     spdlog::spdlog
     lua
+    ZLIB::ZLIB
     pthread
 )
 

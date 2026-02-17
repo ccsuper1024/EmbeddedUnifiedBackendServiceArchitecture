@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <zlib.h>
 
 extern "C" {
 #include <lua.h>
@@ -323,11 +324,29 @@ int LuaVm::Lua_PersistStateV2(lua_State* state) {
     task.path = "state/v2/" + std::string(name, name_len) + ".bin";
     std::string payload;
     payload.append("STV2", 4);
-    payload.push_back(static_cast<char>(1));
-    std::uint32_t length = static_cast<std::uint32_t>(data_len);
-    payload.append(reinterpret_cast<const char*>(&length),
-                   sizeof(length));
-    payload.append(data, data_len);
+    std::string compressed;
+    uLongf dest_capacity = ::compressBound(static_cast<uLong>(data_len));
+    compressed.resize(static_cast<std::size_t>(dest_capacity));
+    uLongf dest_len = dest_capacity;
+    int res = ::compress2(
+        reinterpret_cast<Bytef*>(&compressed[0]), &dest_len,
+        reinterpret_cast<const Bytef*>(data),
+        static_cast<uLong>(data_len),
+        Z_BEST_SPEED);
+    if (res == Z_OK) {
+      compressed.resize(static_cast<std::size_t>(dest_len));
+      payload.push_back(static_cast<char>(2));
+      std::uint32_t length = static_cast<std::uint32_t>(data_len);
+      payload.append(reinterpret_cast<const char*>(&length),
+                     sizeof(length));
+      payload.append(compressed.data(), compressed.size());
+    } else {
+      payload.push_back(static_cast<char>(1));
+      std::uint32_t length = static_cast<std::uint32_t>(data_len);
+      payload.append(reinterpret_cast<const char*>(&length),
+                     sizeof(length));
+      payload.append(data, data_len);
+    }
     task.data = std::move(payload);
     self->to_disk_->Push(std::move(task));
   }

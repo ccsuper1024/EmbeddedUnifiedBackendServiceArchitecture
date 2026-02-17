@@ -68,6 +68,8 @@ if(NOT lua_POPULATED)
   target_include_directories(lua PUBLIC ${lua_SOURCE_DIR}/src)
 endif()
 
+find_package(ZLIB REQUIRED)
+
 enable_testing()
 
 add_subdirectory(src)

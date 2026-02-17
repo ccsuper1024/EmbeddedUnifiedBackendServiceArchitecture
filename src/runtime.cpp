@@ -20,6 +20,8 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fstream>
+#include <unordered_map>
+#include <zlib.h>
 
 namespace backend {
 
@@ -118,6 +120,7 @@ void LoadStateFilesFromDir(LuaVm& vm, const std::string& base, bool v2_encoded) 
       if (!(data[0] == 'S' && data[1] == 'T' && data[2] == 'V' && data[3] == '2')) {
         continue;
       }
+      unsigned char version = static_cast<unsigned char>(data[4]);
       const unsigned char* p =
           reinterpret_cast<const unsigned char*>(data.data() + 5);
       std::uint32_t length =
@@ -125,10 +128,32 @@ void LoadStateFilesFromDir(LuaVm& vm, const std::string& base, bool v2_encoded) 
           (static_cast<std::uint32_t>(p[1]) << 8) |
           (static_cast<std::uint32_t>(p[2]) << 16) |
           (static_cast<std::uint32_t>(p[3]) << 24);
-      std::size_t remain = data.size() - 9;
-      std::size_t use = remain < static_cast<std::size_t>(length) ? remain
-                                                                   : static_cast<std::size_t>(length);
-      payload.assign(data.data() + 9, use);
+      if (version == 1) {
+        std::size_t remain = data.size() - 9;
+        std::size_t use = remain < static_cast<std::size_t>(length)
+                              ? remain
+                              : static_cast<std::size_t>(length);
+        payload.assign(data.data() + 9, use);
+      } else if (version == 2) {
+        std::size_t compressed_size = data.size() - 9;
+        if (compressed_size == 0) {
+          continue;
+        }
+        std::string out;
+        out.resize(static_cast<std::size_t>(length));
+        uLongf dest_len = static_cast<uLongf>(out.size());
+        int res = ::uncompress(
+            reinterpret_cast<Bytef*>(&out[0]), &dest_len,
+            reinterpret_cast<const Bytef*>(data.data() + 9),
+            static_cast<uLongf>(compressed_size));
+        if (res != Z_OK) {
+          continue;
+        }
+        out.resize(static_cast<std::size_t>(dest_len));
+        payload.swap(out);
+      } else {
+        continue;
+      }
     }
     std::size_t dot = filename.find('.');
     std::string name = dot == std::string::npos ? filename : filename.substr(0, dot);
@@ -501,6 +526,7 @@ void Runtime::RunUdpIoThread(int index) {
   }
   UdpSessionTable session_table;
   RtpSessionTable rtp_table;
+  std::unordered_map<std::uint64_t, std::uint64_t> rtp_offsets;
   const int max_events = 64;
   std::vector<epoll_event> events(max_events);
   while (running_.load()) {
@@ -532,7 +558,7 @@ void Runtime::RunUdpIoThread(int index) {
             RtpSession* rtp_session = rtp_table.FindOrCreate(header.ssrc, now);
             Event event;
             event.protocol = ProtocolType::Rtp;
-            event.session_id = rtp_session->id;
+            event.session_id = static_cast<std::uint64_t>(header.ssrc);
             event.context.timestamp_ms = now;
             event.context.remote_ip = ip;
             event.context.remote_port = port;
@@ -553,13 +579,21 @@ void Runtime::RunUdpIoThread(int index) {
               index_task.op = DiskOp::Append;
               index_task.path =
                   "rtp/session_" + std::to_string(rtp_session->id) + ".idx";
+              std::uint64_t& offset = rtp_offsets[rtp_session->id];
+              std::size_t length =
+                  static_cast<std::size_t>(received);
               std::string line;
               line.append(std::to_string(header.sequence_number));
               line.push_back(' ');
               line.append(std::to_string(header.timestamp));
               line.push_back(' ');
               line.append(std::to_string(header.ssrc));
+              line.push_back(' ');
+              line.append(std::to_string(offset));
+              line.push_back(' ');
+              line.append(std::to_string(length));
               line.push_back('\n');
+              offset += static_cast<std::uint64_t>(length);
               index_task.data = std::move(line);
               worker_to_disk_[worker_index]->Push(std::move(index_task));
             }
